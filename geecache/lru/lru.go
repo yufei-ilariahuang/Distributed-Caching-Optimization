@@ -2,14 +2,15 @@ package lru
 
 import "container/list"
 
-// Cache is a LRU cache. It is not safe for concurrent access.
+// Cache is a LRU(Least Recently Used) cache. It is not safe for concurrent access.
+// HashMap + Doubly Linked List (Optimal - O(1) operations)
 type Cache struct {
-	maxBytes int64
-	nbytes   int64
-	ll       *list.List
-	cache    map[string]*list.Element
+	maxBytes int64                    // maximum memory allowed
+	nbytes   int64                    // current memory used
+	ll       *list.List               //double linked list
+	cache    map[string]*list.Element // map key to linked list element
 	// optional and executed when an entry is purged.
-	OnEvicted func(key string, value Value)
+	OnEvicted func(key string, value Value) //The callback function when a record is removed, which can be nil.
 }
 
 type entry struct {
