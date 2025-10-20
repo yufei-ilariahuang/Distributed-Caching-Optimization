@@ -39,6 +39,7 @@ func (m *Map) Add(keys ...string) {
 			//[]byte(...): converts string to byte slice
 			//m.hash(...): computes the hash value of the byte slice
 			hash := int(m.hash([]byte(strconv.Itoa(i) + key)))
+			m.keys = append(m.keys, hash)
 			m.hashMap[hash] = key
 		}
 	}
