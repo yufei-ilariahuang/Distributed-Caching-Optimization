@@ -1,8 +1,9 @@
 package geecache
 
 import (
-	"geecache/lru"
 	"sync"
+
+	"github.com/yufei-ilariahuang/Distributed-Caching-Optimization/lru"
 )
 
 type cache struct {
