@@ -5,7 +5,7 @@ type ByteView struct {
 	b []byte
 }
 
-// Len returns the view's length
+// Len returns the view's length, self.ByteView.Len()
 func (v ByteView) Len() int {
 	return len(v.b)
 }

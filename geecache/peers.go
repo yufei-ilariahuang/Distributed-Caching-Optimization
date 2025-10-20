@@ -6,7 +6,7 @@ type PeerPicker interface {
 	PickPeer(key string) (peer PeerGetter, ok bool)
 }
 
-// PeerGetter is the interface that must be implemented by a peer.
+// PeerGetter is the interface that must be implemented by a peer to get data from the cache.
 type PeerGetter interface {
 	Get(group string, key string) ([]byte, error)
 }
