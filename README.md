@@ -25,6 +25,12 @@ The foundation of each cache node is a thread-safe LRU cache. It uses a standard
 
 ### 2. Consistent Hashing
 
+![alt text](image-1.png)
+maps keys to a space of 2^32, connecting the beginning and end of this number range to form a ring. When adding or deleting nodes, only a small portion of data near that node needs to be relocated, rather than needing to relocate all the data. This solves the * cache avalanche  and cache skew problem *.
+
+- Calculate the hash value of nodes/machines (typically using the node's name, number, and IP address) and place them on the ring.
+- Calculate the hash value of the key and place it on the ring. Moving clockwise, the first node encountered is the node/machine that should be selected.
+
 To distribute keys across multiple nodes without causing a massive reshuffle when the cluster size changes, we use a consistent hashing algorithm.
 
 *   **Hash Ring**: All cache nodes (peers) are mapped onto a virtual hash ring.
@@ -33,7 +39,12 @@ To distribute keys across multiple nodes without causing a massive reshuffle whe
 
 This approach ensures that when a node is added or removed, only a small fraction of keys need to be remapped.
 
-!Consistent Hashing Ring
+
+#### cache breakdown problem
+- when test for 3 curl, becuase of hash function, all request calling 8001 host
+![test](image-3.png)
+- when test for 100, 000, it caused cache breakdown problem
+![cache breakdown for 100,000 reques for 8001](image-2.png)
 
 ### 3. Single-Flight Execution
 
@@ -77,11 +88,11 @@ In a high-concurrency environment, if a cached value expires or is not yet prese
 Distributed-Caching-Optimization/
 ├── consistenthash/
 │   └── consistenthash.go   # Consistent hashing implementation
-├── geecache/
-│   ├── lru/
-│   │   └── lru.go          # Core LRU cache data structure
-│   ├── singleflight/
-│   │   └── singleflight.go # Request coalescing logic
+├── lru/
+│   └── lru.go          # Core LRU cache data structure
+── singleflight/
+│   └── singleflight.go # Request coalescing logic
+├── geecache/  
 │   ├── byteview.go         # Read-only byte view for cache values
 │   ├── cache.go            # Thread-safe wrapper for the LRU cache
 │   ├── geecache.go         # Main group logic and peer interaction
@@ -113,14 +124,3 @@ Distributed-Caching-Optimization/
     unknown not exist
     ```
 
-# Consistent Hashing Algorithm
-![alt text](image-1.png)
-maps keys to a space of 2^32, connecting the beginning and end of this number range to form a ring. When adding or deleting nodes, only a small portion of data near that node needs to be relocated, rather than needing to relocate all the data. This solves the * cache avalanche  and cache skew problem *.
-
-- Calculate the hash value of nodes/machines (typically using the node's name, number, and IP address) and place them on the ring.
-- Calculate the hash value of the key and place it on the ring. Moving clockwise, the first node encountered is the node/machine that should be selected.
-
-# Distributed Nodes
-
-# cache breakdown problem
-![cache breakdown for 100,000 reques for 8001](image-2.png)
