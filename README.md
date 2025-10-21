@@ -21,11 +21,148 @@ The foundation of each cache node is a thread-safe LRU cache. It uses a standard
 *   `map[string]*list.Element`: Provides direct access to cache entries.
 *   `list.List`: A doubly-linked list that maintains the order of access. The most recently used item is moved to the front, and the least recently used item is at the back, ready for eviction.
 
-!LRU Data Structure
 
 ### 2. Consistent Hashing
 
 ![alt text](image-1.png)
+Time │ Request 1       │ Request 2       │ Request 3       │ ... │ Request 100
+─────┼─────────────────┼─────────────────┼─────────────────┼─────┼──────────────
+  1  │ Check cache     │ Check cache     │ Check cache     │     │ Check cache
+  2  │ ❌ MISS         │ ❌ MISS         │ ❌ MISS         │     │ ❌ MISS
+  3  │ Query DB 🔥     │ Query DB 🔥     │ Query DB 🔥     │     │ Query DB 🔥
+  4  │ DB processing   │ DB processing   │ DB processing   │     │ DB processing
+  5  │ Get result      │ Get result      │ Get result      │     │ Get result
+  6  │ Set cache       │ Set cache       │ Set cache       │     │ Set cache
+```
+
+**Problem**: 100 identical DB queries executed simultaneously! 💥
+```
+         ┌─────────────┐
+         │   Cache     │
+         │  (expired)  │
+         └─────────────┘
+                │
+                │ 100 requests miss cache
+                ↓
+         ┌─────────────┐
+         │  Database   │ ← 💥 100 concurrent queries!
+         │  OVERLOAD!  │
+         └─────────────┘
+```
+
+---
+
+## **✅ WITH Singleflight (Problem Solved!)**
+```
+Time │ Request 1          │ Request 2          │ Request 3          │ ... │ Request 100
+─────┼────────────────────┼────────────────────┼────────────────────┼─────┼─────────────────
+  1  │ Check cache        │ Check cache        │ Check cache        │     │ Check cache
+  2  │ ❌ MISS            │ ❌ MISS            │ ❌ MISS            │     │ ❌ MISS
+  3  │ g.mu.Lock()        │ g.mu.Lock() ⏳     │ g.mu.Lock() ⏳     │     │ g.mu.Lock() ⏳
+  4  │ g.m[key] NOT found │ (blocked...)       │ (blocked...)       │     │ (blocked...)
+  5  │ c = new(call)      │                    │                    │     │
+  6  │ g.m[key] = c       │                    │                    │     │
+  7  │ g.mu.Unlock()      │                    │                    │     │
+  8  │ Query DB 🔥        │ g.mu.Lock()        │ g.mu.Lock() ⏳     │     │ g.mu.Lock() ⏳
+  9  │ DB processing...   │ g.m[key] FOUND! ✓  │ (blocked...)       │     │ (blocked...)
+ 10  │                    │ c.wg.Wait() ⏳     │                    │     │
+ 11  │                    │ (waiting...)       │ g.mu.Lock()        │     │ g.mu.Lock() ⏳
+ 12  │                    │                    │ g.m[key] FOUND! ✓  │     │
+ 13  │                    │                    │ c.wg.Wait() ⏳     │     │
+ 14  │ Get result ✓       │                    │ (waiting...)       │     │ (waiting...)
+ 15  │ c.wg.Done()        │ (unblocked!)       │ (unblocked!)       │     │ (unblocked!)
+ 16  │                    │ return result      │ return result      │     │ return result
+```
+
+**Result**: Only **1 DB query** for 100 requests! 🎉
+```
+         ┌─────────────┐
+         │   Cache     │
+         │  (expired)  │
+         └─────────────┘
+                │
+                │ 100 requests miss cache
+                ↓
+         ┌─────────────┐
+         │ Singleflight│
+         │   Group     │ ← Deduplicates to 1 request
+         └─────────────┘
+                │
+                │ Only 1 query!
+                ↓
+         ┌─────────────┐
+         │  Database   │ ← 😊 Happy!
+         │    (OK)     │
+         └─────────────┘
+```
+
+---
+
+## **Detailed Flow Chart**
+```
+Request comes in
+      │
+      ↓
+┌──────────────┐
+│ Check Cache  │
+└──────────────┘
+      │
+      ↓
+  Cache Hit? ────Yes───→ Return cached value
+      │
+      No
+      ↓
+┌──────────────────────┐
+│  g.mu.Lock()         │  ← CRITICAL SECTION
+│  Check g.m[key]      │
+└──────────────────────┘
+      │
+      ↓
+   Key exists in g.m?
+      │
+      ├─────Yes─────→ ┌──────────────────┐
+      │               │ g.mu.Unlock()    │
+      │               │ c.wg.Wait()      │ ← Wait for first request
+      │               │ return c.val     │
+      │               └──────────────────┘
+      │
+      No (I'm first!)
+      ↓
+┌──────────────────────┐
+│ c = new(call)        │
+│ c.wg.Add(1)          │
+│ g.m[key] = c         │  ← Register myself
+│ g.mu.Unlock()        │
+└──────────────────────┘
+      │
+      ↓
+┌──────────────────────┐
+│ Query Database       │  ← Only first request does this
+│ c.val = result       │
+│ c.wg.Done()          │  ← Unblock all waiters
+└──────────────────────┘
+      │
+      ↓
+┌──────────────────────┐
+│ delete(g.m, key)     │  ← Cleanup
+│ return result        │
+└──────────────────────┘
+```
+
+---
+
+## **Comparison Chart**
+
+| Metric | Without Singleflight | With Singleflight |
+|--------|---------------------|-------------------|
+| **DB Queries** | 100 | 1 |
+| **DB Load** | 💥 Overload | 😊 Normal |
+| **Response Time** | Slow (DB overwhelmed) | Fast (only 1 query) |
+| **Cache Breakdown** | ❌ Happens | ✅ Prevented |
+
+---
+
+
 maps keys to a space of 2^32, connecting the beginning and end of this number range to form a ring. When adding or deleting nodes, only a small portion of data near that node needs to be relocated, rather than needing to relocate all the data. This solves the * cache avalanche  and cache skew problem *.
 
 - Calculate the hash value of nodes/machines (typically using the node's name, number, and IP address) and place them on the ring.
@@ -47,7 +184,7 @@ This approach ensures that when a node is added or removed, only a small fractio
 ![cache breakdown for 100,000 reques for 8001](image-2.png)
 
 ### 3. Single-Flight Execution
-
+![alt text](image-4.png)
 The `singleflight` pattern is a crucial optimization to prevent cache breakdown (also known as a cache stampede or thundering herd).
 
 A cache breakdown occurs when a popular, uncached item is requested by thousands of clients simultaneously. All these requests miss the cache and hit the backend database at the same time, potentially causing it to crash.

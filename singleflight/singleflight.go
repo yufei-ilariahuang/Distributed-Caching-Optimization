@@ -4,7 +4,7 @@ import "sync"
 
 // call is an in-flight or completed Do call
 type call struct {
-	wg  sync.WaitGroup
+	wg  sync.WaitGroup // Synchronization/coordination ("wait for completion")
 	val interface{}
 	err error
 }
