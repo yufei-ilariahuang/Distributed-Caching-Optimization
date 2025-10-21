@@ -19,7 +19,7 @@ type Group struct {
 	loader *singleflight.Group
 }
 
-// A Getter loads data for a key.
+// A Getter Callback functionloads data for a key.
 type Getter interface {
 	Get(key string) ([]byte, error)
 }
