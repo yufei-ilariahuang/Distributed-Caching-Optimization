@@ -1,7 +1,51 @@
 # Distributed Caching System in Go
 
 This project is a distributed caching system built in Go, inspired by Google's GroupCache. It is designed to be high-performance, fault-tolerant, and resilient against common caching issues like cache stampedes.
-
+┌─────────────────────────────────────────────────────────────┐
+│                    CLIENT (curl/browser)                     │
+└────────────────────────────┬────────────────────────────────┘
+                             │ HTTP Request
+                             ▼
+┌─────────────────────────────────────────────────────────────┐
+│           API Server (Frontend) - Port 9999                  │
+│              http://localhost:9999/api?key=Tom               │
+└────────────────────────────┬────────────────────────────────┘
+                             │ gee.Get("Tom")
+                             ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    GeeCache Group (Logic Layer)              │
+│                  Handles: routing, singleflight              │
+└──────┬──────────────────────────────┬───────────────────────┘
+       │                              │
+       │ Local cache hit?             │ Cache miss?
+       ▼                              ▼
+┌─────────────────┐        ┌──────────────────────────────────┐
+│  Local LRU      │        │    Peer Discovery                 │
+│  mainCache      │        │    (Consistent Hashing)           │
+│  (in-memory)    │        └──────────┬───────────────────────┘
+└─────────────────┘                   │
+                                      │ Which peer owns key?
+                                      ▼
+                        ┌─────────────────────────────┐
+                        │  Do I own this key?         │
+                        └─────────┬───────────┬───────┘
+                                  │           │
+                    YES: Load local │         │ NO: Fetch from peer
+                                  ▼           ▼
+                        ┌──────────────┐  ┌─────────────────────┐
+                        │  Getter      │  │  HTTP GET to Peer   │
+                        │  (SlowDB)    │  │  e.g., Node 8001    │
+                        │  db[key]     │  └─────────────────────┘
+                        └──────────────┘
+                             │
+                             │ In-memory map
+                             ▼
+                    ┌─────────────────────┐
+                    │  var db = map[...]  │
+                    │  Tom:  "630"        │
+                    │  Jack: "589"        │
+                    │  Sam:  "567"        │
+                    └─────────────────────┘
 ## Features
 
 *   **LRU Cache**: A core in-memory LRU (Least Recently Used) cache for efficient key eviction.
