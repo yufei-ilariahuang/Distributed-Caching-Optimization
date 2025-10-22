@@ -1,6 +1,7 @@
 # Distributed Caching System in Go
 
 This project is a distributed caching system built in Go, inspired by Google's GroupCache. It is designed to be high-performance, fault-tolerant, and resilient against common caching issues like cache stampedes.
+```bash
 ┌─────────────────────────────────────────────────────────────┐
 │                    CLIENT (curl/browser)                     │
 └────────────────────────────┬────────────────────────────────┘
@@ -46,6 +47,8 @@ This project is a distributed caching system built in Go, inspired by Google's G
                     │  Jack: "589"        │
                     │  Sam:  "567"        │
                     └─────────────────────┘
+
+```
 ## Features
 
 *   **LRU Cache**: A core in-memory LRU (Least Recently Used) cache for efficient key eviction.
@@ -69,6 +72,7 @@ The foundation of each cache node is a thread-safe LRU cache. It uses a standard
 ### 2. Consistent Hashing
 
 ![alt text](image-1.png)
+```bash
 Time │ Request 1       │ Request 2       │ Request 3       │ ... │ Request 100
 ─────┼─────────────────┼─────────────────┼─────────────────┼─────┼──────────────
   1  │ Check cache     │ Check cache     │ Check cache     │     │ Check cache
@@ -77,6 +81,7 @@ Time │ Request 1       │ Request 2       │ Request 3       │ ... │ Req
   4  │ DB processing   │ DB processing   │ DB processing   │     │ DB processing
   5  │ Get result      │ Get result      │ Get result      │     │ Get result
   6  │ Set cache       │ Set cache       │ Set cache       │     │ Set cache
+
 ```
 
 **Problem**: 100 identical DB queries executed simultaneously! 💥
