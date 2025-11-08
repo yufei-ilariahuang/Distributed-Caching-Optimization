@@ -603,3 +603,4 @@ Distributed-Caching-Optimization/
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
+<img width="688" height="321" alt="image" src="https://github.com/user-attachments/assets/e4e2e52e-b7cd-419d-9809-8cf9072a25ef" />
