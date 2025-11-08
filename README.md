@@ -310,3 +310,296 @@ Distributed-Caching-Optimization/
     unknown not exist
     ```
 
+## Final Service
+```
+┌────────────────────────────────────────────────────────────┐
+│  BEST USE CASES                                            │
+├────────────────────────────────────────────────────────────┤
+│                                                            │
+│  1️⃣  REAL-TIME LEADERBOARDS / SCORES                      │
+│  ─────────────────────────────────────                    │
+│  • Gaming platforms (millions of players)                 │
+│  • Sports apps (live rankings)                            │
+│  • Fitness trackers (activity feeds)                      │
+│                                                            │
+│  Why ideal:                                                │
+│  ✅ Hot data (leaderboard queries 1000s/sec)              │
+│  ✅ Consistent hashing fits {userId: score}               │
+│  ✅ Singleflight prevents DB hammer on popular players    │
+│  ✅ Frequent updates (invalidation via Kafka)             │
+│  ✅ High tolerance for eventual consistency (~100ms)      │
+│                                                            │
+│  Example Load:                                             │
+│  - 100k daily users, 50k concurrent                       │
+│  - 500k score lookups/hour                                │
+│  - Your system: 💰 $5k/month (vs $50k for managed cache) │
+│                                                            │
+│ ──────────────────────────────────────────────────────────│
+│                                                            │
+│  2️⃣  E-COMMERCE PRODUCT CATALOGS                          │
+│  ─────────────────────────────────────                    │
+│  • Shopping carts (1-2k RPS)                              │
+│  • Product metadata (descriptions, prices)                │
+│  • Inventory counts (frequently updated)                  │
+│                                                            │
+│  Why ideal:                                                │
+│  ✅ Medium-hot data (millions of SKUs, subset cached)     │
+│  ✅ Singleflight prevents thundering herd on flash sales  │
+│  ✅ Multi-AZ ensures uptime (cart never goes down)        │
+│  ✅ Raft handles distributed cart replica sync            │
+│                                                            │
+│  Example Load:                                             │
+│  - 10M SKUs, 10k hot items                                │
+│  - 5k concurrent users in cart                            │
+│  - Your system: 💰 $8k/month                              │
+│                                                            │
+│ ──────────────────────────────────────────────────────────│
+│                                                            │
+│  3️⃣  API RATE LIMITING / QUOTA TRACKING                   │
+│  ─────────────────────────────────────                    │
+│  • API gateway (track per-user rate limits)               │
+│  • SaaS metering (API calls per subscription tier)        │
+│  • DDoS protection (track request IPs)                    │
+│                                                            │
+│  Why ideal:                                                │
+│  ✅ Requires instant cross-node consistency               │
+│  ✅ High throughput (millions of quota checks/sec)        │
+│  ✅ Raft ensures no double-counting across nodes          │
+│  ✅ Sub-millisecond latency critical                      │
+│                                                            │
+│  Example Load:                                             │
+│  - 10k API clients making 100 req/sec each                │
+│  - 1M quota checks/sec                                    │
+│  - Your system: 💰 $6k/month (vs $100k+ for managed)    │
+│                                                            │
+│ ──────────────────────────────────────────────────────────│
+│                                                            │
+│  4️⃣  SESSION STORAGE (User Login State)                   │
+│  ─────────────────────────────────────                    │
+│  • User authentication tokens                             │
+│  • Login sessions (device fingerprints)                   │
+│  • 2FA state (temporary codes)                            │
+│                                                            │
+│  Why ideal:                                                │
+│  ✅ Medium lifespan (hours → days)                        │
+│  ✅ Must survive node failures (Raft quorum)              │
+│  ✅ High availability (concurrent logins spike)           │
+│  ✅ Cost-effective (vs. Redis Enterprise)                 │
+│                                                            │
+│  Example Load:                                             │
+│  - 100M registered users, 5% active                       │
+│  - 5M session lookups/hour                                │
+│  - Your system: 💰 $4k/month                              │
+│                                                            │
+│ ──────────────────────────────────────────────────────────│
+│                                                            │
+│  5️⃣  DISTRIBUTED FEATURE FLAGS / CONFIG                   │
+│  ─────────────────────────────────────────                │
+│  • A/B test assignments (consistent per user)             │
+│  • Feature flags (canary rollouts)                        │
+│  • Regional config (serve different content)              │
+│                                                            │
+│  Why ideal:                                                │
+│  ✅ Consistent hashing = same user always gets same flag  │
+│  ✅ Quick updates (Kafka invalidation)                    │
+│  ✅ Raft ensures no conflicting assignments               │
+│  ✅ Scales to billions of feature flag evals              │
+│                                                            │
+│  Example Load:                                             │
+│  - 1B monthly active users                                │
+│  - 50k feature flag lookups/sec                           │
+│  - Your system: 💰 $12k/month (vs $200k+ LaunchDarkly)  │
+│                                                            │
+│ ──────────────────────────────────────────────────────────│
+│                                                            │
+│  6️⃣  RECOMMENDATION ENGINE CACHE                          │
+│  ─────────────────────────────────────                    │
+│  • ML model predictions (user embeddings)                 │
+│  • Candidate items (pre-computed top-N)                   │
+│  • Personalization state                                  │
+│                                                            │
+│  Why ideal:                                                │
+│  ✅ Cache predictions (not recompute ML every request)    │
+│  ✅ Consistent hashing = same user → same recommendations │
+│  ✅ Singleflight prevents model overload                  │
+│  ✅ High-performance serving (sub-10ms)                   │
+│                                                            │
+│  Example Load:                                             │
+│  - 50M monthly users                                      │
+│  - 100 candidate items / user (500M cached items)         │
+│  - 10k recommendation requests/sec                        │
+│  - Your system: 💰 $10k/month (core recommendation tier) │
+│                                                            │
+└────────────────────────────────────────────────────────────┘
+
+                          ┌─────────────────┐
+                          │ Shoppers (Global)│
+                          └────────┬─────────┘
+                                   │
+                    ┌──────────────┴──────────────┐
+                    │  AWS CloudFront (CDN)       │
+                    │  (Static assets, origin)    │
+                    └──────────────┬──────────────┘
+                                   │
+                ┌──────────────────┴──────────────────┐
+                │  Application Load Balancer (HTTPS)  │
+                │  (geecache.shop.com:443)            │
+                └──────────────┬───────────────────────┘
+                               │
+        ┌──────────────────────┼──────────────────────┐
+        │                      │                      │
+        ▼                      ▼                      ▼
+    ┌────────┐            ┌────────┐            ┌────────┐
+    │ API    │            │ API    │            │ API    │
+    │Frontend│            │Frontend│            │Frontend│
+    │ (2-50  │            │ (2-50  │            │ (2-50  │
+    │ Fargate│            │ Fargate│            │ Fargate│
+    │ tasks) │            │ tasks) │            │ tasks) │
+    │        │            │        │            │        │
+    │ Port   │            │ Port   │            │ Port   │
+    │ 9999   │            │ 9999   │            │ 9999   │
+    └────┬───┘            └────┬───┘            └────┬───┘
+         │ gRPC               │ gRPC               │ gRPC
+         │ (port 8001)        │ (port 8001)        │ (port 8001)
+         │                    │                    │
+         ▼                    ▼                    ▼
+    ┌─────────────────────────────────────────────────────┐
+    │       GEECACHE CLUSTER (3-12 stateful nodes)        │
+    │                                                      │
+    │  Raft Consensus (port 7000):                        │
+    │  ├── Leader election                                │
+    │  ├── Hash ring state agreement                      │
+    │  └── Cluster membership                             │
+    │                                                      │
+    │  Consistent Hash Ring:                              │
+    │  ├── {product_id → node}                            │
+    │  ├── {user_id → node}                               │
+    │  ├── {session_id → node}                            │
+    │  └── Virtual nodes (150 per real node)              │
+    │                                                      │
+    │  LRU Cache (In-Memory):                             │
+    │  ├── 4GB per node × 6 nodes = 24GB total            │
+    │  ├── Eviction: LRU when full                        │
+    │  └── Hit rate: ~92% on hot products                 │
+    │                                                      │
+    │  Singleflight (Request Coalescing):                 │
+    │  ├── Cache miss for "Nike Shoes" → 1 DB query      │
+    │  ├── 1000 concurrent requests → wait for 1          │
+    │  └── DB load: 99% reduction ✅                      │
+    │                                                      │
+    └──────────┬────────────────────────┬──────────────┬──┘
+               │                        │              │
+               │ Cache miss            │ Cache miss    │ Cache miss
+               │ (8%)                  │ (8%)          │ (8%)
+               ▼                        ▼              ▼
+    ┌─────────────────────────────────────────────────────┐
+    │  RDS PostgreSQL (Multi-AZ)                          │
+    │                                                      │
+    │  Primary (us-east-1a):                              │
+    │  ├── products table (100M rows)                      │
+    │  ├── prices (real-time)                             │
+    │  ├── inventory (live counts)                        │
+    │  └── Receives ~4000 queries/sec (8% misses)        │
+    │                                                      │
+    │  Standby (us-east-1b):                              │
+    │  ├── Sync replication                               │
+    │  └── Auto-failover (<30s)                           │
+    │                                                      │
+    │  Read Replicas (optional):                          │
+    │  ├── Analytics queries (non-critical)              │
+    │  └── Defer from primary                             │
+    │                                                      │
+    └─────────────────────────────────────────────────────┘
+
+    Optional: Kafka KRaft (Phase 4)
+    ┌──────────────────────────────────┐
+    │ Topic: product-updates           │
+    │ ├── When price changes: publish  │
+    │ ├── Cache nodes: consume & evict │
+    │ └── Result: Faster invalidation  │
+    └──────────────────────────────────┘
+
+    Observability (Prometheus + Grafana)
+    ┌──────────────────────────────────┐
+    │ Dashboard: e-commerce.grafana    │
+    ├── Cache hit rate: 92%            │
+    ├── P99 latency: 45ms              │
+    ├── DB qps: 4000                   │
+    ├── RPS: 50,000                    │
+    └── Cost: $15k/month               │
+    └──────────────────────────────────┘
+```
+## Not good for
+```
+┌────────────────────────────────────────────────────────────┐
+│  DON'T USE THIS CACHE FOR:                                 │
+├────────────────────────────────────────────────────────────┤
+│                                                            │
+│  ❌ Time-Series Data (metrics, logs)                       │
+│     Why: Raft quorum slows down high-write workloads      │
+│     Use: InfluxDB, Prometheus instead                     │
+│                                                            │
+│  ❌ Full-Text Search (search indexes)                      │
+│     Why: Not designed for complex queries                 │
+│     Use: Elasticsearch, Opensearch                        │
+│                                                            │
+│  ❌ Large Objects (images, videos)                         │
+│     Why: LRU cache limited to GB, not TB                  │
+│     Use: S3, CDN (CloudFront)                             │
+│                                                            │
+│  ❌ Persistent Data Warehouse (analytics)                  │
+│     Why: Cache evicts old data, not designed for OLAP    │
+│     Use: Redshift, BigQuery, Snowflake                    │
+│                                                            │
+│  ❌ Message Queue (job processing)                         │
+│     Why: Cache doesn't guarantee durability or ordering  │
+│     Use: Kafka, SQS, RabbitMQ                             │
+│                                                            │
+│  ❌ Geo-distributed Replication (multi-region)             │
+│     Why: Raft requires low-latency quorum (same region)  │
+│     Use: Multi-master replication (CockroachDB)           │
+│                                                            │
+│  ❌ Super-Hot Real-Time Data (<1ms latency required)       │
+│     Why: Network round-trip + Raft consensus adds latency │
+│     Use: In-process cache, local memory                   │
+│                                                            │
+└────────────────────────────────────────────────────────────┘
+```
+
+## The Clean Separation
+```
+┌─────────────────────────────────────────────────────────────┐
+│           RAFT (Distributed Consensus)                      │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│ Small coordination problem:                                │
+│ • 3-12 nodes agreeing on hash ring                         │
+│ • Who's leader? (not the data)                             │
+│ • Lightweight messages (KB not GB)                         │
+│ • Quorum: majority (can lose 1 node)                       │
+│                                                             │
+│ RAFT DOES: ✅ Consensus on membership & config             │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+
+                          ↓↑ (gRPC)
+
+┌─────────────────────────────────────────────────────────────┐
+│         AWS INFRASTRUCTURE (Everything Else)                │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│ The "boring" stuff that's hard to build:                   │
+│ • Network isolation (VPC, subnets, security groups)        │
+│ • Load balancing (route traffic fairly)                    │
+│ • Auto-scaling (spin up/down instances)                    │
+│ • Persistent storage (RDS databases)                       │
+│ • Monitoring & alerting (CloudWatch, alarms)               │
+│ • Cost tracking (bill by the hour)                         │
+│ • Multi-AZ resilience (data replication)                   │
+│ • Backups & disaster recovery                              │
+│ • SSL/TLS security (encrypt traffic)                       │
+│                                                             │
+│ AWS DOES: ✅ All the infrastructure so you don't have to  │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
