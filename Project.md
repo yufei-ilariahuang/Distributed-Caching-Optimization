@@ -1,182 +1,73 @@
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Internet Traffic                          │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Application Load Balancer (ALB)                             │
-│  - Port 443 (HTTPS with ACM certificate)                    │
-│  - Target: API Frontend instances                           │
-│  - Health Check: GET /health → 200 OK                       │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│  API Frontend Layer (ECS Fargate - Stateless)               │
-│  - Auto Scaling: 2-10 instances based on CPU/latency        │
-│  - Port 9999: HTTP API for external clients                 │
-│  - Port 2112: Prometheus metrics endpoint                   │
-│  - Discovers cache nodes via AWS Cloud Map                  │
-└────────────────────────┬────────────────────────────────────┘
-                         │ gRPC
-                         ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Cache Node Cluster (ECS Fargate - Stateful)                │
-│  - 3-12 nodes across 3 AZs for HA                           │
-│  - Port 8001: gRPC peer-to-peer communication               │
-│  - Port 7000: Raft consensus protocol                       │
-│  - Port 2112: Prometheus metrics                            │
-│  - Each node: LRU cache + Consistent hash ring + Raft       │
-└────┬────────────────────────┬─────────────────────┬─────────┘
-     │                        │                     │
-     │ Cache Miss             │ Cluster Metadata    │ Metrics
-     ▼                        ▼                     ▼
-┌──────────────┐   ┌───────────────────┐   ┌──────────────────┐
-│ RDS Postgres │   │ Raft Consensus    │   │ Prometheus +     │
-│ (SlowDB)     │   │ - Membership      │   │ Grafana          │
-│ - Multi-AZ   │   │ - Leader Election │   │ - 13 dashboards  │
-│ - Read       │   │ - Hash Ring State │   │ - Real-time      │
-│   Replicas   │   │ - EFS for logs    │   │   monitoring     │
-└──────────────┘   └───────────────────┘   └──────────────────┘
-```
+### Problem, Team, and Overview of Experiments
 
-# Core Components to Build
-1. Enhanced Cache Layer (Upgrade Existing)
-Current State:
+*   **Problem:** Modern large-scale applications, particularly those in finance and real-time data, face a critical challenge: delivering data to users with minimal latency while managing heavy load on backend systems. Direct database queries for every request are slow and unscalable. This project solves this by creating a high-performance, distributed in-memory caching system. A distributed cache acts as a fast data-access layer, drastically reducing latency, decreasing load on primary data stores, and improving overall system resilience and scalability. This is crucial for platforms that process and distribute real-time data, where speed and reliability are paramount.
 
-✅ LRU cache with O(1) get/set
-✅ Thread-safe operations with mutex
-✅ Singleflight for cache stampede prevention
-✅ Consistent hashing for key distribution
+*   **Team:** This project is developed by a single engineer passionate about distributed systems and performance optimization. Their expertise lies in Go programming, system design, and implementing foundational components for scalable infrastructure.
 
-2. Raft Consensus Module (New - Core Addition)
-What Raft Manages:
+*   **Overview of Experiments:** The project will be evaluated through a series of experiments focused on performance, scalability, and correctness. Key metrics will include:
+    *   **Cache Hit Rate:** Measuring the effectiveness of the cache under various load patterns.
+    *   **Latency:** Measuring the average and tail latencies for cache hits and misses.
+    *   **Throughput:** Determining the number of requests per second the system can handle.
+    *   **Scalability:** Analyzing how performance metrics change as new nodes are added to the cluster, demonstrating the effectiveness of the consistent hashing algorithm.
+    *   **Correctness:** Unit and integration tests will validate the logic of each component (LRU eviction, consistent hashing, data retrieval).
 
-✅ Cluster membership (which nodes are alive)
-✅ Leader election for coordination
-✅ Consistent hash ring state (replicated across all nodes)
-✅ Cache group configurations
-❌ NOT cache data itself (too high volume)
+### Project Plan and Recent Progress
 
-3. gRPC Communication Layer (Replace HTTP)
-Current: HTTP-based peer communication
-New: gRPC with Protocol Buffers
+*   **Recent Progress:** The foundational components of the caching system have been implemented and unit-tested. This includes the core LRU cache, the consistent hashing module for key distribution, the single-flight mechanism to prevent cache stampedes, and the peer-to-peer communication logic. Most recently, service registration using etcd has been completed, allowing nodes to announce their presence in the distributed system.
 
-4. AWS Cloud Map Service Discovery (New)
-Purpose: Dynamic peer discovery in ECS environment
+*   **Timeline and Breakdown of Tasks:**
+    *   **Phase 1 (Complete):**
+        *   Implement core LRU cache (`lru/`).
+        *   Implement consistent hashing (`consistenthash/`).
+        *   Implement single-flight execution (`singleflight/`).
+        *   Implement main cache logic and peer communication (`geecache/`).
+        *   Add service registration with etcd (`registry/register.go`).
+    *   **Phase 2 (In Progress):**
+        *   **Implement Service Discovery:** Finalize the `registry/discover.go` module to allow the cache to dynamically discover and react to changes in cluster membership via etcd.
+    *   **Phase 3 (Next Steps):**
+        *   **Integration and Benchmarking:** Integrate all components and conduct the performance experiments outlined above.
+        *   **API Finalization:** Expose a clean, public API for the cache group.
+        *   **Deployment:** Package the system for deployment.
 
-5. PostgreSQL Database Adapter (Replace In-Memory Map)
-Current: var db = map[string]string{"Tom": "630", ...}
-New: PostgreSQL with connection pooling
+### Objectives
 
-6. Observability Stack (Prometheus + Grafana)
+*   **Short-Term:** To deliver a fully functional, production-ready distributed caching system. This includes completing the dynamic service discovery feature, conducting thorough testing and benchmarking, and ensuring the system is stable and reliable. The goal is to have a system where new cache nodes can be added or removed seamlessly with zero downtime.
 
-# Grafana Dashboards (13 total):
+*   **Long-Term:** The vision extends to creating a more advanced and feature-rich caching solution. Future work includes:
+    *   **Replication:** Adding data replication for enhanced fault tolerance, so the failure of a single node does not lead to data loss.
+    *   **Advanced Eviction Policies:** Exploring and implementing more sophisticated eviction algorithms beyond LRU (e.g., LFU, ARC).
+    *   **Security:** Implementing authentication and authorization for cache access.
+    *   **Monitoring and Observability:** Integrating with monitoring tools (like Prometheus) to provide detailed insights into cache performance and health.
 
-Cache Overview: Hit rate, miss rate, throughput
-Singleflight Efficiency: Coalescing ratio, wait times
-Raft Cluster Health: Leader status, peer count, elections
-Request Latency: P50/P95/P99 by operation
-Database Load: Query rate, connection pool, slow queries
-Consistent Hash Distribution: Key variance across nodes
-ALB Metrics: Target health, request count, 5XX errors
-ECS Auto-scaling: Task count, CPU/memory, scaling events
-Memory Pressure: Cache size, eviction rate
-gRPC Performance: Connection stats, error rate
-Cost Dashboard: Data transfer, compute costs
-Fault Injection Results: Disruption windows, recovery times
-Experiment Comparison: Side-by-side metrics for all experiments
+### Related work
 
-### **Scaling Dimensions**
+This project is inspired by and builds upon the concepts of several well-established systems and academic papers.
+*   **Google's Groupcache:** This project is heavily influenced by the design of `groupcache`, a caching and cache-filling library that is part of Google's production infrastructure. It borrows concepts like single-flight request collapsing and peer-to-peer data fetching.
+*   **Memcached:** A classic, simple, and high-performance distributed memory object caching system. This project shares the goal of providing a fast, in-memory key-value store but adds more sophisticated features like consistent hashing within the client library.
+*   **Redis:** A more feature-rich in-memory data store that can be used as a database, cache, and message broker. While Redis offers more data structures, this project focuses on excelling at one thing: providing a scalable, distributed cache for arbitrary data blobs.
+*   **Consistent Hashing:** The distribution of keys across nodes is based on the principles laid out in the original paper by Karger et al., which is fundamental to building scalable distributed storage systems.
 
-#### **Horizontal Scaling (Primary)**
+### Methodology
 
-**1. Stateless API Frontend:**
-- Scale: 2 → 50+ instances instantly
-- Trigger: CPU > 70% or P95 latency > 200ms
-- ALB distributes load round-robin
-- Zero coordination between frontends
+The proposed system is a distributed cache written in Go, designed for simplicity and performance. The architecture consists of several key components:
 
-**2. Stateful Cache Nodes:**
-- Scale: 3 → 12 nodes (always odd for Raft quorum)
-- Add node process:
-```
-  1. ECS starts new task
-  2. Task discovers peers via Cloud Map
-  3. Joins Raft as learner (non-voter)
-  4. Catches up on Raft log (10-30 seconds)
-  5. Autopilot promotes to voter
-  6. Raft proposes adding node to hash ring
-  7. All nodes apply ring update
-  8. Keys redistributed: K/N keys move to new node
-```
-Challenge: Cache miss spike during redistribution
+1.  **Node-Local Cache:** Each node in the cluster maintains an in-memory LRU (Least Recently Used) cache for fast access to hot data.
+2.  **Consistent Hashing:** A consistent hash ring is used to map each data key to a specific node in the cluster. This ensures that only a small fraction of keys need to be remapped when a node is added or removed, minimizing cache churn.
+3.  **Peer-to-Peer Communication:** If a node receives a request for a key that it does not own, it uses the consistent hash ring to identify the correct peer. It then acts as a client, fetching the data from that peer via an HTTP or gRPC endpoint.
+4.  **Single-Flight Mechanism:** To prevent cache stampedes (where multiple concurrent requests for a missing key all hit the backend data source), a single-flight mechanism is employed. It ensures that for any given key, only one request to the backend is in flight at any time.
+5.  **Service Discovery with etcd:** Nodes are not statically configured. Instead, they register themselves with an etcd cluster upon startup. A discovery module on each node watches etcd for changes in cluster membership (nodes joining or leaving) and dynamically updates its consistent hash ring accordingly. This allows for elastic scaling and high availability.
 
-3. Database Read Replicas:
+### Preliminary Results
 
-Route cache misses across 1 primary + N replicas
-Singleflight still prevents duplicate reads
+The individual components have been validated through comprehensive unit tests (`lru_test.go`, `consistenthash_test.go`, etc.), which serve as the initial set of results demonstrating correctness. For example, tests confirm that the LRU cache correctly evicts the least recently used item and that the consistent hash ring distributes keys as expected.
 
-### Vertical Scaling (Secondary)
+The next phase of results collection will involve integration benchmarking. The planned experiments will measure:
+*   **Latency reduction:** Comparing response times for a sample application with and without the cache.
+*   **Database load reduction:** Measuring the number of queries hitting the primary database under load, with and without the cache.
+*   **Dynamic scaling impact:** Measuring the key re-balancing and temporary performance degradation when a new node is added to a live cluster.
 
-Increase memory: 2GB → 8GB (more cache capacity)
-Increase CPU: 1 vCPU → 4 vCPU (higher concurrency)
-Use Fargate Spot for 70% cost savings on cache nodes
+Analysis of these results will be critical to fine-tuning the system for the final report.
 
-# Key Technical Challenges
-1. Raft Bootstrap in Ephemeral ECS:
+### Impact
 
-Problem: Tasks have dynamic IPs, Raft needs stable identity
-Solution: Use EFS for persistent logs + Cloud Map for discovery + node ID from task metadata
-
-2. Consistent Hash Ring Synchronization:
-
-Problem: All nodes must agree on ring state for consistent key routing
-Solution: Raft replicates hash ring configuration; all updates go through consensus
-
-3. Graceful Node Addition:
-
-Problem: Adding node causes cache invalidation for redistributed keys
-Solution: Pre-warm new node's cache before adding to ring, monitor miss rate spike
-
-4. ALB Health Check During Leader Election:
-
-Problem: 5-second timeout during leader election causes request failures
-Solution: Tune timeout to 2s, implement retry logic in frontend
-
-5. Cost-Performance Trade-off:
-
-Problem: More nodes = better hit rate but higher cost
-Solution: Experiments determine optimal node count per workload
-
-
-# 3 Scalability Experiments
-
-### Experiment 1: Horizontal Scaling & Consistent Hashing Effectiveness
-Hypothesis
-The system scales from 3 to 12 cache nodes with:
-
-- <15% variance in key distribution (consistent hashing working correctly)
-- <20% cache hit rate drop during scaling events (minimized invalidation)
-- ~Linear throughput improvement (doubling nodes ≈ doubles RPS capacity)
-- <10-second cluster convergence after topology changes
-
-### Experiment 2: Singleflight Protection Against Cache Stampede
-Hypothesis
-Singleflight prevents database overload during synchronized cache misses:
-
-- 99%+ reduction in database queries (N concurrent requests → 1 query)
-- <3x latency increase for coalesced requests vs. direct execution
-- Zero connection pool exhaustion (stays below 100 connections)
-- No memory leaks from unbounded singleflight groups
-
-### Experiment 3: Multi-AZ Fault Tolerance & Raft Resilience
-Hypothesis
-System survives catastrophic failures with minimal disruption:
-
-- Follower node failure: <0.1% error rate, zero user impact
-- Leader node failure: 5-7 second disruption (ALB timeout + election), automatic recovery
-- Entire AZ failure: <1% error rate, <10 second recovery, Raft maintains quorum
-- Split-brain prevention: No dual-leader scenario, minority partition rejects writes
-- Auto-healing: ECS replaces failed tasks within 90 seconds
+The significance of this project is twofold. First, it serves as a practical, hands-on implementation of a sophisticated distributed system, demonstrating a deep understanding of the principles required to build scalable, real-world infrastructure. Second, the resulting system is a valuable, reusable component for any developer building large-scale services. In an era where application performance and user experience are paramount, an effective caching layer is not a luxury but a necessity. By providing an open-source, easy-to-use, and high-performance distributed cache, this project empowers developers to build faster and more reliable applications, directly impacting end-users and business stakeholders who depend on them. For companies like Bloomberg, which operate at the intersection of big data, low latency, and high availability, the principles and implementation details of this project are directly applicable and highly valuable.

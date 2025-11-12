@@ -6,6 +6,8 @@ import (
 	"sync"
 
 	"github.com/yufei-ilariahuang/Distributed-Caching-Optimization/singleflight"
+
+	pb "github.com/yufei-ilariahuang/Distributed-Caching-Optimization/geecachepb"
 )
 
 // A Group is a cache namespace and associated data loaded spread over
@@ -122,9 +124,14 @@ func (g *Group) getLocally(key string) (ByteView, error) {
 }
 
 func (g *Group) getFromPeer(peer PeerGetter, key string) (ByteView, error) {
-	bytes, err := peer.Get(g.name, key)
+	req := &pb.Request{
+		Group: g.name,
+		Key:   key,
+	}
+	res := &pb.Response{}
+	err := peer.Get(req, res)
 	if err != nil {
 		return ByteView{}, err
 	}
-	return ByteView{b: bytes}, nil
+	return ByteView{b: res.Value}, nil
 }
