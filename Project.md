@@ -57,41 +57,6 @@ The proposed system is a distributed cache written in Go, designed for simplicit
 4.  **Single-Flight Mechanism:** To prevent cache stampedes (where multiple concurrent requests for a missing key all hit the backend data source), a single-flight mechanism is employed. It ensures that for any given key, only one request to the backend is in flight at any time.
 5.  **Service Discovery with etcd:** Nodes are not statically configured. Instead, they register themselves with an etcd cluster upon startup. A discovery module on each node watches etcd for changes in cluster membership (nodes joining or leaving) and dynamically updates its consistent hash ring accordingly. This allows for elastic scaling and high availability.
 
-### System Architecture
-
-The following diagram illustrates the high-level architecture of the distributed caching system.
-
-```mermaid
-graph TD
-    subgraph Client
-        A[Client Application]
-    end
-
-    subgraph GeeCache Cluster
-        B{GeeCache Node}
-        C[Local Cache (LRU)]
-        D[Consistent Hash]
-        E[Single Flight]
-        F[Peer Communication]
-    end
-
-    subgraph Service Discovery
-        G[etcd]
-    end
-
-    subgraph Backend
-        H[Database]
-    end
-
-    A -- Request --> B
-    B -- Local Get --> C
-    B -- Key Lookup --> D
-    D -- Determines Peer --> F
-    F -- Remote Get --> B
-    B -- If cache miss --> E
-    E -- Prevents stampede --> H
-    B -- Registers/Discovers --> G
-```
 
 ### Preliminary Results
 
@@ -107,3 +72,447 @@ Analysis of these results will be critical to fine-tuning the system for the fin
 ### Impact
 
 The significance of this project is twofold. First, it serves as a practical, hands-on implementation of a sophisticated distributed system, demonstrating a deep understanding of the principles required to build scalable, real-world infrastructure. Second, the resulting system is a valuable, reusable component for any developer building large-scale services. In an era where application performance and user experience are paramount, an effective caching layer is not a luxury but a necessity. By providing an open-source, easy-to-use, and high-performance distributed cache, this project empowers developers to build faster and more reliable applications, directly impacting end-users and business stakeholders who depend on them. For companies like Bloomberg, which operate at the intersection of big data, low latency, and high availability, the principles and implementation details of this project are directly applicable and highly valuable.
+
+# Distributed Caching System - Architecture & Design
+
+## System Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                   DISTRIBUTED IN-MEMORY CACHING SYSTEM                          │
+│                     Go • gRPC • Consistent Hashing • etcd                       │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Layer 1: Cluster Orchestration
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                      CLUSTER MEMBERSHIP MANAGEMENT                              │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────┐  ┌──────────────────────────┐  ┌──────────────────────┐
+│   SERVICE REGISTRATION   │  │   DISCOVERY & WATCH      │  │  ELASTIC SCALING     │
+├──────────────────────────┤  ├──────────────────────────┤  ├──────────────────────┤
+│                          │  │                          │  │                      │
+│ registry/register.go     │  │ registry/discover.go     │  │ Dynamic Membership   │
+│                          │  │                          │  │                      │
+│ • Node startup           │  │ • Watch etcd changes     │  │ • Add nodes: O(k/n)  │
+│ • Store in etcd          │  │ • Update hash ring       │  │   remapping          │
+│ • Heartbeat/TTL          │  │ • Trigger rebalance      │  │                      │
+│ • Self-healing           │  │ • Zero downtime          │  │ • Remove nodes:      │
+│                          │  │                          │  │   graceful shutdown  │
+│ etcd Key:                │  │ Watch triggers:          │  │                      │
+│ /cache/{nodeID}          │  │ • GET /cache/*           │  │ Minimal key churn:   │
+│ {addr, timestamp}        │  │ • Revision version       │  │ • Only k/n keys      │
+│                          │  │ • Real-time updates      │  │   remapped (k nodes) │
+│                          │  │                          │  │                      │
+└──────────────────────────┘  └──────────────────────────┘  └──────────────────────┘
+```
+
+---
+
+## Layer 2: Core Caching Engine
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                        DATA ROUTING & DISTRIBUTION                              │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────┐  ┌──────────────────────────┐  ┌──────────────────────┐
+│  CONSISTENT HASHING      │  │   GEECACHE CORE          │  │  PEER-TO-PEER        │
+├──────────────────────────┤  ├──────────────────────────┤  ├──────────────────────┤
+│                          │  │                          │  │                      │
+│ consistenthash/          │  │ geecache/geecache.go     │  │ geecache/peers.go    │
+│                          │  │                          │  │ geecachepb/ (proto)  │
+│ • Hash ring (2^31)       │  │ • Cache groups           │  │                      │
+│ • Virtual nodes          │  │ • Fill function          │  │ • gRPC communication │
+│ • Key → Node mapping     │  │ • Key routing            │  │ • HTTP fallback      │
+│ • Replica placement      │  │                          │  │ • Binary proto bufs  │
+│                          │  │ Flow:                    │  │                      │
+│ O(log n) lookup time     │  │ 1. hash(key) → node      │  │ Peer election:       │
+│ Minimal remapping on     │  │ 2. Is it me?             │  │ • Local cache first  │
+│ node changes             │  │   ↓ Yes → Check LRU      │  │ • Consistent hashing │
+│                          │  │   ↓ No → P2P fetch       │  │ • Network locality   │
+│ Ring rebalance:          │  │ 3. Cache miss?           │  │                      │
+│ • O(k/n) key movement    │  │   → SingleFlight call    │  │ Backoff strategy:    │
+│   (k=keys, n=nodes)      │  │ 4. Return ByteView       │  │ • Exponential retry  │
+│                          │  │                          │  │ • Circuit breaker    │
+│                          │  │                          │  │                      │
+└──────────────────────────┘  └──────────────────────────┘  └──────────────────────┘
+```
+
+---
+
+## Layer 3: Node-Local Operations
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                      PER-NODE CACHING COMPONENTS                                │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────┐  ┌──────────────────────────┐  ┌──────────────────────┐
+│    LRU CACHE             │  │  SINGLE-FLIGHT CONTROL   │  │  DATA SERIALIZATION  │
+├──────────────────────────┤  ├──────────────────────────┤  ├──────────────────────┤
+│                          │  │                          │  │                      │
+│ lru/lru.go               │  │ singleflight/            │  │ geecache/byteview.go │
+│                          │  │                          │  │                      │
+│ • Doubly-linked list     │  │ • Deduplicate requests   │  │ • Immutable bytes    │
+│ • O(1) eviction          │  │ • Prevents stampede      │  │ • Copy-on-write      │
+│ • LRU ordering           │  │ • Single inflight per key│  │ • Zero-copy reads    │
+│ • Configurable capacity  │  │                          │  │                      │
+│                          │  │ Cache stampede:          │  │ Example:             │
+│ Eviction: Remove oldest  │  │ 1M requests for key X    │  │ • Image: 5MB         │
+│ accessed (head)          │  │ → 1M backend calls       │  │ • Serve millions     │
+│                          │  │ SingleFlight: Wait group │  │ • No copy overhead   │
+│ Hot data in memory       │  │ → 1 backend call        │  │                      │
+│ • Fashion-online access  │  │ • Others wait result     │  │ Protobuf wire format:│
+│ • Recency tracking       │  │ • Share response         │  │ • Compact encoding   │
+│                          │  │                          │  │ • Language agnostic  │
+│                          │  │                          │  │                      │
+└──────────────────────────┘  └──────────────────────────┘  └──────────────────────┘
+
+┌──────────────────────────┐
+│   HTTP API SERVER        │
+├──────────────────────────┤
+│                          │
+│ geecache/http.go         │
+│                          │
+│ • GET /cache/:key        │
+│ • Health checks          │
+│ • Metrics exposure       │
+│ • Request validation     │
+│                          │
+│ Endpoint:                │
+│ http://node:port/cache   │
+│                          │
+│ Response: ByteView       │
+│ (protobuf or raw)        │
+│                          │
+└──────────────────────────┘
+```
+
+---
+
+## Request Flow: Cache Hit vs Miss
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           REQUEST HANDLING FLOW                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+CLIENT REQUEST: GET key="user:123"
+        ↓
+┌───────────────────────────────────┐
+│  1. HASH KEY                      │
+│  hash("user:123") = 0x7F2A4C      │
+└───────────────────────────────────┘
+        ↓
+┌───────────────────────────────────┐
+│  2. LOOKUP OWNER NODE             │
+│  Consistent hash ring             │
+│  "user:123" → Node B              │
+└───────────────────────────────────┘
+        ↓
+    ┌───┴───────────┐
+    │               │
+    ↓               ↓
+[Node == Me?]  [Node != Me?]
+    │               │
+    │               ↓
+    │        ┌─────────────────────┐
+    │        │  P2P FETCH (Node B) │
+    │        │  gRPC call          │
+    │        │  /GetKey RPC        │
+    │        └─────────────────────┘
+    │               │
+    ↓               ↓
+┌───────────────────────────────────┐
+│  3. LOCAL LRU CHECK               │
+│  ConcurrentMap lookup             │
+│  O(1) access                      │
+└───────────────────────────────────┘
+        ↓
+    ┌───┴──────────────┐
+    │                  │
+    ↓                  ↓
+[Found?]          [Not Found?]
+    │                  │
+    │ CACHE HIT ✓      │ CACHE MISS ✗
+    │ Latency: ~1ms    │
+    │                  ↓
+    │           ┌──────────────────────┐
+    │           │  SINGLEFLIGHT CHECK  │
+    │           │  Already fetching?   │
+    │           └──────────────────────┘
+    │                  │
+    │                  ↓
+    │           ┌──────────────────────┐
+    │           │  CALL BACKEND        │
+    │           │  getter(key)         │
+    │           │  e.g., DB query      │
+    │           │  Latency: ~50ms      │
+    │           └──────────────────────┘
+    │                  │
+    │                  ↓
+    │           ┌──────────────────────┐
+    │           │  POPULATE CACHE      │
+    │           │  LRU.Set(key, val)   │
+    │           │  Maybe evict         │
+    │           └──────────────────────┘
+    │                  │
+    └────────┬─────────┘
+             ↓
+     ┌──────────────────────┐
+     │  RETURN BYTEVIEW     │
+     │  Immutable data      │
+     │  Zero-copy safe      │
+     └──────────────────────┘
+             ↓
+        CLIENT RESPONSE
+
+
+LATENCY COMPARISON:
+├─ Cache Hit:        ~1ms   (LRU memory access)
+├─ P2P Miss:         ~5ms   (gRPC + remote LRU)
+└─ Backend Miss:    ~50ms   (DB query + cache populate)
+```
+
+---
+
+## Design Patterns & Trade-offs
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                          DESIGN PATTERNS APPLIED                                │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────┐  ┌──────────────────────────┐  ┌──────────────────────┐
+│  CONSISTENCY MODEL       │  │  FAILURE RESILIENCE      │  │  PERFORMANCE TACTICS │
+├──────────────────────────┤  ├──────────────────────────┤  ├──────────────────────┤
+│                          │  │                          │  │                      │
+│ CAP Theorem: Choose AP   │  │ Bulkhead Pattern         │  │ Single-Flight        │
+│ • Availability priority  │  │ • Isolate failures       │  │ • Prevent stampede   │
+│ • Eventual consistency   │  │ • Thread pools           │  │ • Collapse requests  │
+│                          │  │ • Connection pools       │  │                      │
+│ Eventually Consistent:   │  │ • Circuit breaker        │  │ Consistent Hashing   │
+│ • No global locks        │  │ • Graceful degradation   │  │ • Minimize movement  │
+│ • Local commits only     │  │                          │  │ • O(k/n) remapping   │
+│ • Async replication      │  │ Timeouts:                │  │                      │
+│                          │  │ • P2P RPC: 500ms         │  │ LRU Eviction         │
+│ No 2PC (avoids blocking) │  │ • Backend: 2s            │  │ • Hot data in memory │
+│ • Deadlock free          │  │ • etcd watch: realtime   │  │ • Recency bias       │
+│ • Scalable              │  │                          │  │                      │
+│                          │  │ Retry Strategy:          │  │ Zero-Copy ByteView   │
+│ Leader Election (etcd)   │  │ • Exponential backoff    │  │ • Immutable sharing  │
+│ • Watch/notify pattern   │  │ • Jitter to avoid storm  │  │ • No serialization   │
+│ • Weak consistency OK    │  │ • Max retries: 3         │  │   overhead           │
+│                          │  │                          │  │                      │
+│ Data Replication:        │  │ Health Checks:           │  │ Peer Selection       │
+│ • TTL-based invalidation │  │ • etcd TTL renewal       │  │ • Hash-based routing │
+│ • Lease pattern (etcd)   │  │ • Node availability      │  │ • Consistent across  │
+│ • Grace period on remove │  │ • Auto-deregister        │  │   nodes              │
+│                          │  │                          │  │                      │
+└──────────────────────────┘  └──────────────────────────┘  └──────────────────────┘
+```
+
+---
+
+## Scalability Analysis
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                        SCALABILITY CHARACTERISTICS                              │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+HORIZONTAL SCALABILITY:
+┌─────────────────────┐
+│ Add Node to Cluster │
+└──────┬──────────────┘
+       ↓
+┌─────────────────────────────────────────────────────────────┐
+│ 1. New node registers with etcd                             │
+│    /cache/{newNodeID} = {addr, timestamp}                   │
+│                                                              │
+│ 2. All nodes watch etcd detect the change                   │
+│    Trigger hash ring recalculation                          │
+│                                                              │
+│ 3. Consistent hashing minimizes remapping                   │
+│    • Old keys: (n)/(n+1) stay on same node                 │
+│    • Affected keys: 1/(n+1) ≈ k/n                          │
+│    • Load rebalance: O(k/n) key movements                   │
+│                                                              │
+│ 4. Zero downtime: No cluster pause needed                   │
+│    Gradual rebalance during requests                        │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+
+
+VERTICAL SCALABILITY:
+┌─────────────────────────────────────────────────────────────┐
+│ Increase Node Resources                                      │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│ Memory: Larger LRU cache size                               │
+│   • More hot keys in memory                                 │
+│   • Fewer backend calls                                     │
+│   • Hit rate: Linear improvement                            │
+│                                                              │
+│ CPU: Faster processing (if bottleneck)                      │
+│   • Concurrent requests: Limited by GOMAXPROCS              │
+│   • gRPC benefits from parallelism                          │
+│   • Throughput: Linear with cores                           │
+│                                                              │
+│ Network: Higher bandwidth                                   │
+│   • Throughput ceiling: BW * 1MB = max reqs/sec            │
+│   • Most operations: O(1) network roundtrips                │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+
+
+THROUGHPUT ESTIMATES (Single Node):
+┌──────────────────────────────────────────────────────────┐
+│ Cache Hit Rate 95%:                                      │
+│   • Hit latency: 1ms                                     │
+│   • Throughput: ~1,000 req/sec per node                  │
+│   • Formula: 1000ms / 1ms = 1,000 ops                    │
+│                                                          │
+│ Cache Hit Rate 50%:                                      │
+│   • Avg latency: 0.5 * 1ms + 0.5 * 50ms = 25.5ms        │
+│   • Throughput: ~40 req/sec per node (DB bottleneck)     │
+│                                                          │
+│ Full Cluster (10 nodes, 95% hit rate):                   │
+│   • Total: 10,000 req/sec                                │
+│   • Scales linearly with node count                      │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Key Metrics & Monitoring
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                            PERFORMANCE METRICS                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+Cache Effectiveness:
+├─ Hit Rate:         % of requests served from cache
+│  ├─ Target: 95%+  (reduce backend load)
+│  ├─ Healthy: 80%+
+│  └─ Poor: <50%    (reconsider cache strategy)
+│
+├─ Eviction Rate:    % of keys removed due to LRU
+│  ├─ Target: <1%   (cache size is sufficient)
+│  ├─ High: >5%     (increase capacity or TTL)
+│  └─ Zero: Possible with small working set
+│
+└─ Latency:          Time to serve request
+   ├─ Cache Hit:      ~1ms   (must be sub-millisecond!)
+   ├─ Cache Miss:    ~5-50ms (depends on backend)
+   ├─ P2P Fetch:      ~5ms   (gRPC roundtrip)
+   └─ Tail (p99):     <100ms (SLA requirement)
+
+
+Node Cluster Health:
+├─ Active Nodes:     Count of healthy cache nodes
+│  ├─ Expected: stable
+│  └─ Monitoring: etcd watch + TTL renewal
+│
+├─ Key Distribution: Standard deviation of keys/node
+│  ├─ Target: Low SD (balanced hash ring)
+│  ├─ Healthy: Within 10% of mean
+│  └─ Poor: Some nodes overloaded
+│
+└─ Rebalance Time:   Time for hash ring stabilization
+   └─ Target: <500ms (fast convergence)
+
+
+Backend Pressure:
+├─ Backend Queries:  Queries to data source
+│  ├─ Reduced: 1/hit_rate factor
+│  ├─ Good: 95% cache hit = 20x reduction
+│  └─ Metric: queries/sec to DB
+│
+└─ SingleFlight Effectiveness:
+   ├─ Collapsed Requests: Requests waiting on one inflight
+   ├─ Stampede Prevention: Measure request collapse ratio
+   └─ Metric: Avg wait group size > 1
+```
+
+---
+
+## Project Structure
+
+```
+Distributed-Caching-Optimization/
+│
+├── lru/                           # Core LRU Cache Implementation
+│   ├── lru.go                     # LRU data structure (doubly-linked list)
+│   └── lru_test.go                # Unit tests (eviction, ordering)
+│
+├── consistenthash/                # Consistent Hashing Ring
+│   ├── consistenthash.go          # Hash ring (virtual nodes, O(log n))
+│   └── consistenthash_test.go     # Tests (key distribution, rebalancing)
+│
+├── singleflight/                  # Request Deduplication
+│   ├── singleflight.go            # WaitGroup-based collapse
+│   └── singleflight_test.go       # Tests (stampede prevention)
+│
+├── geecache/                      # Main Cache Logic
+│   ├── geecache.go                # Cache group & routing
+│   ├── geecache_test.go           # Integration tests
+│   ├── byteview.go                # Immutable data container
+│   ├── cache.go                   # Concurrent map wrapper
+│   ├── http.go                    # HTTP server endpoint
+│   └── peers.go                   # Peer interface
+│
+├── geecachepb/                    # Protocol Buffers (gRPC)
+│   ├── geecachepb.proto           # Service definition
+│   ├── geecachepb.pb.go           # Generated message code
+│   └── geecachepb_grpc.pb.go      # Generated gRPC stubs
+│
+├── registry/                      # Cluster Membership
+│   ├── register.go                # Node registration in etcd
+│   └── discover.go                # Service discovery & watch
+│
+├── main.go                        # Application entry point
+├── go.mod, go.sum                 # Go module dependencies
+├── run.sh                         # Multi-node test script
+└── README.md                      # Project documentation
+```
+
+---
+
+## Getting Started
+
+```bash
+# Start etcd (cluster coordination)
+docker run -d --name etcd -p 2379:2379 \
+  quay.io/coreos/etcd:v3.5.0
+
+# Run multiple cache nodes (auto-discovery via etcd)
+go run main.go -port 8001 -etcd http://localhost:2379
+go run main.go -port 8002 -etcd http://localhost:2379
+go run main.go -port 8003 -etcd http://localhost:2379
+
+# Run benchmarks
+go test -bench=. ./...
+
+# Load testing with Locust
+locust -f locustfile.py --host=http://localhost:8001
+```
+
+---
+
+## Next Steps
+
+- [ ] Complete `registry/discover.go` (dynamic rebalancing)
+- [ ] Conduct end-to-end integration tests
+- [ ] Benchmark against Redis
+- [ ] Add monitoring (Prometheus metrics)
+- [ ] Implement data replication for fault tolerance
+- [ ] Deploy to Kubernetes with auto-scaling
