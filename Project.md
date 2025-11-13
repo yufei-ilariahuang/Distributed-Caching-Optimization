@@ -1,3 +1,97 @@
+# Distributed Caching System - Architecture & Design
+
+## System Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                   DISTRIBUTED IN-MEMORY CACHING SYSTEM                          │
+│                     Go • gRPC • Consistent Hashing • etcd                       │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+## Request Flow: Cache Hit vs Miss
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                           REQUEST HANDLING FLOW                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+CLIENT REQUEST: GET key="user:123"
+        ↓
+┌───────────────────────────────────┐
+│  1. HASH KEY                      │
+│  hash("user:123") = 0x7F2A4C      │
+└───────────────────────────────────┘
+        ↓
+┌───────────────────────────────────┐
+│  2. LOOKUP OWNER NODE             │
+│  Consistent hash ring             │
+│  "user:123" → Node B              │
+└───────────────────────────────────┘
+        ↓
+    ┌───┴───────────┐
+    │               │
+    ↓               ↓
+[Node == Me?]  [Node != Me?]
+    │               │
+    │               ↓
+    │        ┌─────────────────────┐
+    │        │  P2P FETCH (Node B) │
+    │        │  gRPC call          │
+    │        │  /GetKey RPC        │
+    │        └─────────────────────┘
+    │               │
+    ↓               ↓
+┌───────────────────────────────────┐
+│  3. LOCAL LRU CHECK               │
+│  ConcurrentMap lookup             │
+│  O(1) access                      │
+└───────────────────────────────────┘
+        ↓
+    ┌───┴──────────────┐
+    │                  │
+    ↓                  ↓
+[Found?]          [Not Found?]
+    │                  │
+    │ CACHE HIT ✓      │ CACHE MISS ✗
+    │ Latency: ~1ms    │
+    │                  ↓
+    │           ┌──────────────────────┐
+    │           │  SINGLEFLIGHT CHECK  │
+    │           │  Already fetching?   │
+    │           └──────────────────────┘
+    │                  │
+    │                  ↓
+    │           ┌──────────────────────┐
+    │           │  CALL BACKEND        │
+    │           │  getter(key)         │
+    │           │  e.g., DB query      │
+    │           │  Latency: ~50ms      │
+    │           └──────────────────────┘
+    │                  │
+    │                  ↓
+    │           ┌──────────────────────┐
+    │           │  POPULATE CACHE      │
+    │           │  LRU.Set(key, val)   │
+    │           │  Maybe evict         │
+    │           └──────────────────────┘
+    │                  │
+    └────────┬─────────┘
+             ↓
+     ┌──────────────────────┐
+     │  RETURN BYTEVIEW     │
+     │  Immutable data      │
+     │  Zero-copy safe      │
+     └──────────────────────┘
+             ↓
+        CLIENT RESPONSE
+
+
+LATENCY COMPARISON:
+├─ Cache Hit:        ~1ms   (LRU memory access)
+├─ P2P Miss:         ~5ms   (gRPC + remote LRU)
+└─ Backend Miss:    ~50ms   (DB query + cache populate)
+```
+
 ### Problem, Team, and Overview of Experiments
 
 *   **Problem:** Modern large-scale applications, particularly those in finance and real-time data, face a critical challenge: delivering data to users with minimal latency while managing heavy load on backend systems. Direct database queries for every request are slow and unscalable. This project solves this by creating a high-performance, distributed in-memory caching system. A distributed cache acts as a fast data-access layer, drastically reducing latency, decreasing load on primary data stores, and improving overall system resilience and scalability. This is crucial for platforms that process and distribute real-time data, where speed and reliability are paramount.
@@ -73,18 +167,6 @@ Analysis of these results will be critical to fine-tuning the system for the fin
 
 The significance of this project is twofold. First, it serves as a practical, hands-on implementation of a sophisticated distributed system, demonstrating a deep understanding of the principles required to build scalable, real-world infrastructure. Second, the resulting system is a valuable, reusable component for any developer building large-scale services. In an era where application performance and user experience are paramount, an effective caching layer is not a luxury but a necessity. By providing an open-source, easy-to-use, and high-performance distributed cache, this project empowers developers to build faster and more reliable applications, directly impacting end-users and business stakeholders who depend on them. For companies like Bloomberg, which operate at the intersection of big data, low latency, and high availability, the principles and implementation details of this project are directly applicable and highly valuable.
 
-# Distributed Caching System - Architecture & Design
-
-## System Overview
-
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                   DISTRIBUTED IN-MEMORY CACHING SYSTEM                          │
-│                     Go • gRPC • Consistent Hashing • etcd                       │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
-
----
 
 ## Layer 1: Cluster Orchestration
 
@@ -196,91 +278,7 @@ The significance of this project is twofold. First, it serves as a practical, ha
 
 ---
 
-## Request Flow: Cache Hit vs Miss
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                           REQUEST HANDLING FLOW                                 │
-└─────────────────────────────────────────────────────────────────────────────────┘
-
-CLIENT REQUEST: GET key="user:123"
-        ↓
-┌───────────────────────────────────┐
-│  1. HASH KEY                      │
-│  hash("user:123") = 0x7F2A4C      │
-└───────────────────────────────────┘
-        ↓
-┌───────────────────────────────────┐
-│  2. LOOKUP OWNER NODE             │
-│  Consistent hash ring             │
-│  "user:123" → Node B              │
-└───────────────────────────────────┘
-        ↓
-    ┌───┴───────────┐
-    │               │
-    ↓               ↓
-[Node == Me?]  [Node != Me?]
-    │               │
-    │               ↓
-    │        ┌─────────────────────┐
-    │        │  P2P FETCH (Node B) │
-    │        │  gRPC call          │
-    │        │  /GetKey RPC        │
-    │        └─────────────────────┘
-    │               │
-    ↓               ↓
-┌───────────────────────────────────┐
-│  3. LOCAL LRU CHECK               │
-│  ConcurrentMap lookup             │
-│  O(1) access                      │
-└───────────────────────────────────┘
-        ↓
-    ┌───┴──────────────┐
-    │                  │
-    ↓                  ↓
-[Found?]          [Not Found?]
-    │                  │
-    │ CACHE HIT ✓      │ CACHE MISS ✗
-    │ Latency: ~1ms    │
-    │                  ↓
-    │           ┌──────────────────────┐
-    │           │  SINGLEFLIGHT CHECK  │
-    │           │  Already fetching?   │
-    │           └──────────────────────┘
-    │                  │
-    │                  ↓
-    │           ┌──────────────────────┐
-    │           │  CALL BACKEND        │
-    │           │  getter(key)         │
-    │           │  e.g., DB query      │
-    │           │  Latency: ~50ms      │
-    │           └──────────────────────┘
-    │                  │
-    │                  ↓
-    │           ┌──────────────────────┐
-    │           │  POPULATE CACHE      │
-    │           │  LRU.Set(key, val)   │
-    │           │  Maybe evict         │
-    │           └──────────────────────┘
-    │                  │
-    └────────┬─────────┘
-             ↓
-     ┌──────────────────────┐
-     │  RETURN BYTEVIEW     │
-     │  Immutable data      │
-     │  Zero-copy safe      │
-     └──────────────────────┘
-             ↓
-        CLIENT RESPONSE
-
-
-LATENCY COMPARISON:
-├─ Cache Hit:        ~1ms   (LRU memory access)
-├─ P2P Miss:         ~5ms   (gRPC + remote LRU)
-└─ Backend Miss:    ~50ms   (DB query + cache populate)
-```
-
----
 
 ## Design Patterns & Trade-offs
 
