@@ -142,7 +142,172 @@ This project is inspired by and builds upon the concepts of several well-establi
 *   **Consistent Hashing:** The distribution of keys across nodes is based on the principles laid out in the original paper by Karger et al., which is fundamental to building scalable distributed storage systems.
 
 ### Methodology
+## Scalability Analysis
 
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                        SCALABILITY CHARACTERISTICS                              │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+HORIZONTAL SCALABILITY:
+┌─────────────────────┐
+│ Add Node to Cluster │
+└──────┬──────────────┘
+       ↓
+┌─────────────────────────────────────────────────────────────┐
+│ 1. New node registers with etcd                             │
+│    /cache/{newNodeID} = {addr, timestamp}                   │
+│                                                              │
+│ 2. All nodes watch etcd detect the change                   │
+│    Trigger hash ring recalculation                          │
+│                                                              │
+│ 3. Consistent hashing minimizes remapping                   │
+│    • Old keys: (n)/(n+1) stay on same node                 │
+│    • Affected keys: 1/(n+1) ≈ k/n                          │
+│    • Load rebalance: O(k/n) key movements                   │
+│                                                              │
+│ 4. Zero downtime: No cluster pause needed                   │
+│    Gradual rebalance during requests                        │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+
+
+VERTICAL SCALABILITY:
+┌─────────────────────────────────────────────────────────────┐
+│ Increase Node Resources                                      │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│ Memory: Larger LRU cache size                               │
+│   • More hot keys in memory                                 │
+│   • Fewer backend calls                                     │
+│   • Hit rate: Linear improvement                            │
+│                                                              │
+│ CPU: Faster processing (if bottleneck)                      │
+│   • Concurrent requests: Limited by GOMAXPROCS              │
+│   • gRPC benefits from parallelism                          │
+│   • Throughput: Linear with cores                           │
+│                                                              │
+│ Network: Higher bandwidth                                   │
+│   • Throughput ceiling: BW * 1MB = max reqs/sec            │
+│   • Most operations: O(1) network roundtrips                │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+
+
+THROUGHPUT ESTIMATES (Single Node):
+┌──────────────────────────────────────────────────────────┐
+│ Cache Hit Rate 95%:                                      │
+│   • Hit latency: 1ms                                     │
+│   • Throughput: ~1,000 req/sec per node                  │
+│   • Formula: 1000ms / 1ms = 1,000 ops                    │
+│                                                          │
+│ Cache Hit Rate 50%:                                      │
+│   • Avg latency: 0.5 * 1ms + 0.5 * 50ms = 25.5ms        │
+│   • Throughput: ~40 req/sec per node (DB bottleneck)     │
+│                                                          │
+│ Full Cluster (10 nodes, 95% hit rate):                   │
+│   • Total: 10,000 req/sec                                │
+│   • Scales linearly with node count                      │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Key Metrics & Monitoring
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                            PERFORMANCE METRICS                                  │
+└─────────────────────────────────────────────────────────────────────────────────┘
+
+Cache Effectiveness:
+├─ Hit Rate:         % of requests served from cache
+│  ├─ Target: 95%+  (reduce backend load)
+│  ├─ Healthy: 80%+
+│  └─ Poor: <50%    (reconsider cache strategy)
+│
+├─ Eviction Rate:    % of keys removed due to LRU
+│  ├─ Target: <1%   (cache size is sufficient)
+│  ├─ High: >5%     (increase capacity or TTL)
+│  └─ Zero: Possible with small working set
+│
+└─ Latency:          Time to serve request
+   ├─ Cache Hit:      ~1ms   (must be sub-millisecond!)
+   ├─ Cache Miss:    ~5-50ms (depends on backend)
+   ├─ P2P Fetch:      ~5ms   (gRPC roundtrip)
+   └─ Tail (p99):     <100ms (SLA requirement)
+
+
+Node Cluster Health:
+├─ Active Nodes:     Count of healthy cache nodes
+│  ├─ Expected: stable
+│  └─ Monitoring: etcd watch + TTL renewal
+│
+├─ Key Distribution: Standard deviation of keys/node
+│  ├─ Target: Low SD (balanced hash ring)
+│  ├─ Healthy: Within 10% of mean
+│  └─ Poor: Some nodes overloaded
+│
+└─ Rebalance Time:   Time for hash ring stabilization
+   └─ Target: <500ms (fast convergence)
+
+
+Backend Pressure:
+├─ Backend Queries:  Queries to data source
+│  ├─ Reduced: 1/hit_rate factor
+│  ├─ Good: 95% cache hit = 20x reduction
+│  └─ Metric: queries/sec to DB
+│
+└─ SingleFlight Effectiveness:
+   ├─ Collapsed Requests: Requests waiting on one inflight
+   ├─ Stampede Prevention: Measure request collapse ratio
+   └─ Metric: Avg wait group size > 1
+```
+
+---
+
+## Project Structure
+
+```
+Distributed-Caching-Optimization/
+│
+├── lru/                           # Core LRU Cache Implementation
+│   ├── lru.go                     # LRU data structure (doubly-linked list)
+│   └── lru_test.go                # Unit tests (eviction, ordering)
+│
+├── consistenthash/                # Consistent Hashing Ring
+│   ├── consistenthash.go          # Hash ring (virtual nodes, O(log n))
+│   └── consistenthash_test.go     # Tests (key distribution, rebalancing)
+│
+├── singleflight/                  # Request Deduplication
+│   ├── singleflight.go            # WaitGroup-based collapse
+│   └── singleflight_test.go       # Tests (stampede prevention)
+│
+├── geecache/                      # Main Cache Logic
+│   ├── geecache.go                # Cache group & routing
+│   ├── geecache_test.go           # Integration tests
+│   ├── byteview.go                # Immutable data container
+│   ├── cache.go                   # Concurrent map wrapper
+│   ├── http.go                    # HTTP server endpoint
+│   └── peers.go                   # Peer interface
+│
+├── geecachepb/                    # Protocol Buffers (gRPC)
+│   ├── geecachepb.proto           # Service definition
+│   ├── geecachepb.pb.go           # Generated message code
+│   └── geecachepb_grpc.pb.go      # Generated gRPC stubs
+│
+├── registry/                      # Cluster Membership
+│   ├── register.go                # Node registration in etcd
+│   └── discover.go                # Service discovery & watch
+│
+├── main.go                        # Application entry point
+├── go.mod, go.sum                 # Go module dependencies
+├── run.sh                         # Multi-node test script
+└── README.md                      # Project documentation
+```
+
+---
 The proposed system is a distributed cache written in Go, designed for simplicity and performance. The architecture consists of several key components:
 
 1.  **Node-Local Cache:** Each node in the cluster maintains an in-memory LRU (Least Recently Used) cache for fast access to hot data.
@@ -318,172 +483,7 @@ The significance of this project is twofold. First, it serves as a practical, ha
 
 ---
 
-## Scalability Analysis
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                        SCALABILITY CHARACTERISTICS                              │
-└─────────────────────────────────────────────────────────────────────────────────┘
-
-HORIZONTAL SCALABILITY:
-┌─────────────────────┐
-│ Add Node to Cluster │
-└──────┬──────────────┘
-       ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 1. New node registers with etcd                             │
-│    /cache/{newNodeID} = {addr, timestamp}                   │
-│                                                              │
-│ 2. All nodes watch etcd detect the change                   │
-│    Trigger hash ring recalculation                          │
-│                                                              │
-│ 3. Consistent hashing minimizes remapping                   │
-│    • Old keys: (n)/(n+1) stay on same node                 │
-│    • Affected keys: 1/(n+1) ≈ k/n                          │
-│    • Load rebalance: O(k/n) key movements                   │
-│                                                              │
-│ 4. Zero downtime: No cluster pause needed                   │
-│    Gradual rebalance during requests                        │
-│                                                              │
-└─────────────────────────────────────────────────────────────┘
-
-
-VERTICAL SCALABILITY:
-┌─────────────────────────────────────────────────────────────┐
-│ Increase Node Resources                                      │
-├─────────────────────────────────────────────────────────────┤
-│                                                              │
-│ Memory: Larger LRU cache size                               │
-│   • More hot keys in memory                                 │
-│   • Fewer backend calls                                     │
-│   • Hit rate: Linear improvement                            │
-│                                                              │
-│ CPU: Faster processing (if bottleneck)                      │
-│   • Concurrent requests: Limited by GOMAXPROCS              │
-│   • gRPC benefits from parallelism                          │
-│   • Throughput: Linear with cores                           │
-│                                                              │
-│ Network: Higher bandwidth                                   │
-│   • Throughput ceiling: BW * 1MB = max reqs/sec            │
-│   • Most operations: O(1) network roundtrips                │
-│                                                              │
-└─────────────────────────────────────────────────────────────┘
-
-
-THROUGHPUT ESTIMATES (Single Node):
-┌──────────────────────────────────────────────────────────┐
-│ Cache Hit Rate 95%:                                      │
-│   • Hit latency: 1ms                                     │
-│   • Throughput: ~1,000 req/sec per node                  │
-│   • Formula: 1000ms / 1ms = 1,000 ops                    │
-│                                                          │
-│ Cache Hit Rate 50%:                                      │
-│   • Avg latency: 0.5 * 1ms + 0.5 * 50ms = 25.5ms        │
-│   • Throughput: ~40 req/sec per node (DB bottleneck)     │
-│                                                          │
-│ Full Cluster (10 nodes, 95% hit rate):                   │
-│   • Total: 10,000 req/sec                                │
-│   • Scales linearly with node count                      │
-│                                                          │
-└──────────────────────────────────────────────────────────┘
-```
-
----
-
-## Key Metrics & Monitoring
-
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                            PERFORMANCE METRICS                                  │
-└─────────────────────────────────────────────────────────────────────────────────┘
-
-Cache Effectiveness:
-├─ Hit Rate:         % of requests served from cache
-│  ├─ Target: 95%+  (reduce backend load)
-│  ├─ Healthy: 80%+
-│  └─ Poor: <50%    (reconsider cache strategy)
-│
-├─ Eviction Rate:    % of keys removed due to LRU
-│  ├─ Target: <1%   (cache size is sufficient)
-│  ├─ High: >5%     (increase capacity or TTL)
-│  └─ Zero: Possible with small working set
-│
-└─ Latency:          Time to serve request
-   ├─ Cache Hit:      ~1ms   (must be sub-millisecond!)
-   ├─ Cache Miss:    ~5-50ms (depends on backend)
-   ├─ P2P Fetch:      ~5ms   (gRPC roundtrip)
-   └─ Tail (p99):     <100ms (SLA requirement)
-
-
-Node Cluster Health:
-├─ Active Nodes:     Count of healthy cache nodes
-│  ├─ Expected: stable
-│  └─ Monitoring: etcd watch + TTL renewal
-│
-├─ Key Distribution: Standard deviation of keys/node
-│  ├─ Target: Low SD (balanced hash ring)
-│  ├─ Healthy: Within 10% of mean
-│  └─ Poor: Some nodes overloaded
-│
-└─ Rebalance Time:   Time for hash ring stabilization
-   └─ Target: <500ms (fast convergence)
-
-
-Backend Pressure:
-├─ Backend Queries:  Queries to data source
-│  ├─ Reduced: 1/hit_rate factor
-│  ├─ Good: 95% cache hit = 20x reduction
-│  └─ Metric: queries/sec to DB
-│
-└─ SingleFlight Effectiveness:
-   ├─ Collapsed Requests: Requests waiting on one inflight
-   ├─ Stampede Prevention: Measure request collapse ratio
-   └─ Metric: Avg wait group size > 1
-```
-
----
-
-## Project Structure
-
-```
-Distributed-Caching-Optimization/
-│
-├── lru/                           # Core LRU Cache Implementation
-│   ├── lru.go                     # LRU data structure (doubly-linked list)
-│   └── lru_test.go                # Unit tests (eviction, ordering)
-│
-├── consistenthash/                # Consistent Hashing Ring
-│   ├── consistenthash.go          # Hash ring (virtual nodes, O(log n))
-│   └── consistenthash_test.go     # Tests (key distribution, rebalancing)
-│
-├── singleflight/                  # Request Deduplication
-│   ├── singleflight.go            # WaitGroup-based collapse
-│   └── singleflight_test.go       # Tests (stampede prevention)
-│
-├── geecache/                      # Main Cache Logic
-│   ├── geecache.go                # Cache group & routing
-│   ├── geecache_test.go           # Integration tests
-│   ├── byteview.go                # Immutable data container
-│   ├── cache.go                   # Concurrent map wrapper
-│   ├── http.go                    # HTTP server endpoint
-│   └── peers.go                   # Peer interface
-│
-├── geecachepb/                    # Protocol Buffers (gRPC)
-│   ├── geecachepb.proto           # Service definition
-│   ├── geecachepb.pb.go           # Generated message code
-│   └── geecachepb_grpc.pb.go      # Generated gRPC stubs
-│
-├── registry/                      # Cluster Membership
-│   ├── register.go                # Node registration in etcd
-│   └── discover.go                # Service discovery & watch
-│
-├── main.go                        # Application entry point
-├── go.mod, go.sum                 # Go module dependencies
-├── run.sh                         # Multi-node test script
-└── README.md                      # Project documentation
-```
-
----
 
 ## Getting Started
 
