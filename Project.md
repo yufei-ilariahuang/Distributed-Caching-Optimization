@@ -57,6 +57,42 @@ The proposed system is a distributed cache written in Go, designed for simplicit
 4.  **Single-Flight Mechanism:** To prevent cache stampedes (where multiple concurrent requests for a missing key all hit the backend data source), a single-flight mechanism is employed. It ensures that for any given key, only one request to the backend is in flight at any time.
 5.  **Service Discovery with etcd:** Nodes are not statically configured. Instead, they register themselves with an etcd cluster upon startup. A discovery module on each node watches etcd for changes in cluster membership (nodes joining or leaving) and dynamically updates its consistent hash ring accordingly. This allows for elastic scaling and high availability.
 
+### System Architecture
+
+The following diagram illustrates the high-level architecture of the distributed caching system.
+
+```mermaid
+graph TD
+    subgraph Client
+        A[Client Application]
+    end
+
+    subgraph GeeCache Cluster
+        B{GeeCache Node}
+        C[Local Cache (LRU)]
+        D[Consistent Hash]
+        E[Single Flight]
+        F[Peer Communication]
+    end
+
+    subgraph Service Discovery
+        G[etcd]
+    end
+
+    subgraph Backend
+        H[Database]
+    end
+
+    A -- Request --> B
+    B -- Local Get --> C
+    B -- Key Lookup --> D
+    D -- Determines Peer --> F
+    F -- Remote Get --> B
+    B -- If cache miss --> E
+    E -- Prevents stampede --> H
+    B -- Registers/Discovers --> G
+```
+
 ### Preliminary Results
 
 The individual components have been validated through comprehensive unit tests (`lru_test.go`, `consistenthash_test.go`, etc.), which serve as the initial set of results demonstrating correctness. For example, tests confirm that the LRU cache correctly evicts the least recently used item and that the consistent hash ring distributes keys as expected.
