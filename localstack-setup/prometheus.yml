@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Scrape LocalStack CloudWatch metrics proxy (if available)
+  - job_name: 'localstack-cloudwatch'
+    static_configs:
+      - targets: ['localstack:4566']
+    metrics_path: '/_aws/cloudwatch/metrics'

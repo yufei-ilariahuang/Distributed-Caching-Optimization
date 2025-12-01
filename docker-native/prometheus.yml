@@ -1,0 +1,50 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: 'localstack'
+
+scrape_configs:
+  # GeeCache nodes monitoring
+  - job_name: 'geecache-nodes'
+    static_configs:
+      - targets:
+          - 'cache-node-1:8001'
+          - 'cache-node-2:8002'
+          - 'cache-node-3:8003'
+        labels:
+          service: 'geecache'
+          environment: 'localstack'
+
+  # API Frontend monitoring
+  - job_name: 'geecache-api'
+    static_configs:
+      - targets:
+          - 'api-frontend:9999'
+        labels:
+          service: 'geecache-api'
+          environment: 'localstack'
+
+  # etcd monitoring
+  - job_name: 'etcd'
+    static_configs:
+      - targets:
+          - 'etcd:2379'
+        labels:
+          service: 'etcd'
+          environment: 'localstack'
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets:
+          - 'localhost:9090'
+
+  # cAdvisor - Container resource metrics
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets:
+          - 'cadvisor:8080'
+        labels:
+          service: 'cadvisor'
+          environment: 'localstack'

@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
+	"github.com/yufei-ilariahuang/Distributed-Caching-Optimization/metrics"
 	"github.com/yufei-ilariahuang/Distributed-Caching-Optimization/singleflight"
 
 	pb "github.com/yufei-ilariahuang/Distributed-Caching-Optimization/geecachepb"
@@ -88,15 +90,26 @@ func (g *Group) load(key string) (value ByteView, err error) {
 
 // Get value for a key from cache
 func (g *Group) Get(key string) (ByteView, error) {
+	start := time.Now()
+	defer func() {
+		duration := time.Since(start).Seconds()
+		metrics.RequestDuration.WithLabelValues("local", "get").Observe(duration)
+	}()
+
 	if key == "" {
+		metrics.RequestsTotal.WithLabelValues("local", "error").Inc()
 		return ByteView{}, fmt.Errorf("key is required")
 	}
 
 	if v, ok := g.mainCache.get(key); ok {
 		log.Println("[GeeCache] hit")
+		metrics.HitsTotal.WithLabelValues("local").Inc()
+		metrics.RequestsTotal.WithLabelValues("local", "hit").Inc()
 		return v, nil
 	}
 
+	metrics.MissesTotal.WithLabelValues("local").Inc()
+	metrics.RequestsTotal.WithLabelValues("local", "miss").Inc()
 	return g.load(key)
 }
 
@@ -120,6 +133,10 @@ func (g *Group) getLocally(key string) (ByteView, error) {
 	}
 	value := ByteView{b: cloneBytes(bytes)}
 	g.populateCache(key, value)
+
+	// Record load from source
+	metrics.LoadsTotal.WithLabelValues("local", g.name).Inc()
+
 	return value, nil
 }
 

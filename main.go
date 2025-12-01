@@ -14,6 +14,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/yufei-ilariahuang/Distributed-Caching-Optimization/geecache"
 )
 
@@ -38,12 +39,20 @@ func startCacheServer(addr string, addrs []string, gee *geecache.Group) {
 	peers := geecache.NewHTTPPool(addr)
 	peers.Set(addrs...)
 	gee.RegisterPeers(peers)
+
+	// Expose metrics endpoint
+	http.Handle("/metrics", promhttp.Handler())
+
 	log.Println("geecache is running at", addr)
-	log.Fatal(http.ListenAndServe(addr[7:], peers))
+	log.Println("metrics available at", addr+"/metrics")
+	// Extract port from addr (format: http://host:port) and bind to all interfaces
+	port := addr[len("http://localhost"):]
+	log.Fatal(http.ListenAndServe("0.0.0.0"+port, peers))
 }
 
 func startAPIServer(apiAddr string, gee *geecache.Group) {
-	http.Handle("/api", http.HandlerFunc(
+	mux := http.NewServeMux()
+	mux.Handle("/api", http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			key := r.URL.Query().Get("key")
 			view, err := gee.Get(key)
@@ -55,8 +64,14 @@ func startAPIServer(apiAddr string, gee *geecache.Group) {
 			w.Write(view.ByteSlice())
 
 		}))
+	// Expose metrics endpoint for API server
+	mux.Handle("/metrics", promhttp.Handler())
+
 	log.Println("fontend server is running at", apiAddr)
-	log.Fatal(http.ListenAndServe(apiAddr[7:], nil))
+	log.Println("metrics available at", apiAddr+"/metrics")
+	// Extract port from apiAddr and bind to all interfaces
+	port := apiAddr[len("http://localhost"):]
+	log.Fatal(http.ListenAndServe("0.0.0.0"+port, mux))
 
 }
 

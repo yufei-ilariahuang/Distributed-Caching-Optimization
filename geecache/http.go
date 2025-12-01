@@ -8,9 +8,11 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/yufei-ilariahuang/Distributed-Caching-Optimization/consistenthash"
 	pb "github.com/yufei-ilariahuang/Distributed-Caching-Optimization/geecachepb"
+	"github.com/yufei-ilariahuang/Distributed-Caching-Optimization/metrics"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -74,6 +76,7 @@ type httpGetter struct {
 // ServeHTTP handle all http requests
 // ServeHTTP handle all http requests
 func (p *HTTPPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	if !strings.HasPrefix(r.URL.Path, p.basePath) {
 		panic("HTTPPool serving unexpected path: " + r.URL.Path)
 	}
@@ -96,6 +99,7 @@ func (p *HTTPPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	view, err := group.Get(key)
 	if err != nil {
+		metrics.RequestsTotal.WithLabelValues(p.self, "error").Inc()
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -109,9 +113,14 @@ func (p *HTTPPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Write(body)
+
+	// Record metrics
+	duration := time.Since(start).Seconds()
+	metrics.RequestDuration.WithLabelValues(p.self, "peer_serve").Observe(duration)
 }
 
 func (h *httpGetter) Get(in *pb.Request, out *pb.Response) error {
+	start := time.Now()
 	u := fmt.Sprintf(
 		"%v%v/%v",
 		h.baseURL,
@@ -120,11 +129,13 @@ func (h *httpGetter) Get(in *pb.Request, out *pb.Response) error {
 	)
 	res, err := http.Get(u)
 	if err != nil {
+		metrics.PeerRequestsTotal.WithLabelValues("self", h.baseURL, "error").Inc()
 		return err
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
+		metrics.PeerRequestsTotal.WithLabelValues("self", h.baseURL, "error").Inc()
 		return fmt.Errorf("server returned: %v", res.Status)
 	}
 
@@ -136,6 +147,11 @@ func (h *httpGetter) Get(in *pb.Request, out *pb.Response) error {
 	if err = proto.Unmarshal(bytes, out); err != nil {
 		return fmt.Errorf("decoding response body: %v", err)
 	}
+
+	// Record successful peer request
+	metrics.PeerRequestsTotal.WithLabelValues("self", h.baseURL, "success").Inc()
+	duration := time.Since(start).Seconds()
+	metrics.RequestDuration.WithLabelValues("self", "peer_fetch").Observe(duration)
 
 	return nil
 }

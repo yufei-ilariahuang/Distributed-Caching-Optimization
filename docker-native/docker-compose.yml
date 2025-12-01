@@ -1,0 +1,170 @@
+version: '3.8'
+
+services:
+  # LocalStack - AWS emulation
+  localstack:
+    image: localstack/localstack:latest
+    container_name: localstack
+    ports:
+      - "4566:4566"            # LocalStack Gateway
+      - "4510-4559:4510-4559"  # External services port range
+    environment:
+      - SERVICES=ec2,ecs,elasticloadbalancing,cloudwatch,logs
+      - DEBUG=1
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN}
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "./localstack-data:/var/lib/localstack"
+    networks:
+      - geecache-network
+
+  # etcd - Service Discovery
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.9
+    container_name: etcd
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+    environment:
+      - ALLOW_NONE_AUTHENTICATION=yes
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd:2379
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd:2380
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_INITIAL_CLUSTER=default=http://etcd:2380
+      - ETCD_NAME=default
+    networks:
+      - geecache-network
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # GeeCache Node 1
+  cache-node-1:
+    build: .
+    container_name: cache-node-1
+    ports:
+      - "8001:8001"
+    command: ["-port=8001"]
+    depends_on:
+      etcd:
+        condition: service_healthy
+    environment:
+      - ETCD_ENDPOINTS=etcd:2379
+    networks:
+      - geecache-network
+
+  # GeeCache Node 2
+  cache-node-2:
+    build: .
+    container_name: cache-node-2
+    ports:
+      - "8002:8002"
+    command: ["-port=8002"]
+    depends_on:
+      etcd:
+        condition: service_healthy
+    environment:
+      - ETCD_ENDPOINTS=etcd:2379
+    networks:
+      - geecache-network
+
+  # GeeCache Node 3
+  cache-node-3:
+    build: .
+    container_name: cache-node-3
+    ports:
+      - "8003:8003"
+    command: ["-port=8003"]
+    depends_on:
+      etcd:
+        condition: service_healthy
+    environment:
+      - ETCD_ENDPOINTS=etcd:2379
+    networks:
+      - geecache-network
+
+  # API Frontend
+  api-frontend:
+    build: .
+    container_name: api-frontend
+    ports:
+      - "9999:9999"
+    command: ["-port=8003", "-api=true"]
+    depends_on:
+      - cache-node-1
+      - cache-node-2
+      - cache-node-3
+    environment:
+      - ETCD_ENDPOINTS=etcd:2379
+    networks:
+      - geecache-network
+
+  # Prometheus - Metrics Collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    networks:
+      - geecache-network
+    depends_on:
+      - cache-node-1
+      - cache-node-2
+      - cache-node-3
+
+  # Grafana - Metrics Visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - geecache-network
+    depends_on:
+      - prometheus
+
+  # cAdvisor - Container Metrics
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    ports:
+      - "8080:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    privileged: true
+    devices:
+      - /dev/kmsg
+    networks:
+      - geecache-network
+
+networks:
+  geecache-network:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:

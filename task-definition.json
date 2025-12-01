@@ -1,0 +1,27 @@
+{
+  "family": "geecache-task",
+  "networkMode": "bridge",
+  "containerDefinitions": [
+    {
+      "name": "geecache",
+      "image": "geecache:latest",
+      "memory": 512,
+      "cpu": 256,
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8001,
+          "hostPort": 8001,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "DISCOVERY_TYPE",
+          "value": "cloudmap"
+        }
+      ]
+    }
+  ],
+  "requiresCompatibilities": ["EC2"]
+}
