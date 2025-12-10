@@ -26,6 +26,9 @@ sleep 30
 
 # 4. Run tests
 ./test.sh
+
+# or to desdroy and restart
+./fix-and-deploy.sh 
 ```
 
 ## What Works with Your LocalStack Pro

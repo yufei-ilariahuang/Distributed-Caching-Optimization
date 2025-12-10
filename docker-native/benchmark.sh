@@ -40,8 +40,18 @@ done
 METRICS=$(curl -s "http://localhost:9999/metrics")
 HITS=$(echo "$METRICS" | grep 'geecache_hits_total{node="local"}' | awk '{print $2}')
 MISSES=$(echo "$METRICS" | grep 'geecache_misses_total{node="local"}' | awk '{print $2}')
+
+# Handle empty values
+HITS=${HITS:-0}
+MISSES=${MISSES:-0}
 TOTAL=$((HITS + MISSES))
-HIT_RATE=$(awk "BEGIN {printf \"%.2f\", ($HITS / $TOTAL) * 100}")
+
+# Calculate hit rate (avoid division by zero)
+if [ "$TOTAL" -gt 0 ]; then
+    HIT_RATE=$(awk -v hits="$HITS" -v total="$TOTAL" 'BEGIN {printf "%.2f", (hits / total) * 100}')
+else
+    HIT_RATE="0.00"
+fi
 
 echo "Total requests: $TOTAL"
 echo "Cache hits: $HITS"
@@ -89,7 +99,8 @@ wait
 # Check load distribution
 echo "Checking metrics from each node:"
 for PORT in 8001 8002 8003; do
-    REQUESTS=$(curl -s "http://localhost:$PORT/metrics" | grep 'geecache_requests_total' | grep -v '#' | awk '{sum+=$2} END {print sum}')
+    REQUESTS=$(curl -s "http://localhost:$PORT/metrics" | grep 'geecache_requests_total' | grep -v '#' | awk '{sum+=$2} END {print (sum == "" ? 0 : sum)}')
+    REQUESTS=${REQUESTS:-0}
     echo "Node :$PORT handled $REQUESTS requests"
 done
 echo ""

@@ -10,23 +10,6 @@ REGION=${AWS_REGION:-us-east-1}
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TERRAFORM_DIR="${PROJECT_DIR}/aws-terraform"
 
-# Colors for output
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m' # No Color
-
-print_step() {
-    echo -e "${GREEN}==>${NC} $1"
-}
-
-print_warning() {
-    echo -e "${YELLOW}Warning:${NC} $1"
-}
-
-print_error() {
-    echo -e "${RED}Error:${NC} $1"
-}
 
 # Step 1: Check prerequisites
 print_step "Step 1: Checking prerequisites..."
